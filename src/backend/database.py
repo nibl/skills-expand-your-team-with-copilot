@@ -1,15 +1,92 @@
 """
-MongoDB database configuration and setup for Mergington High School API
+In-memory database configuration and setup for Mergington High School API
 """
 
-from pymongo import MongoClient
 from argon2 import PasswordHasher
 
-# Connect to MongoDB
-client = MongoClient('mongodb://localhost:27017/')
-db = client['mergington_high']
-activities_collection = db['activities']
-teachers_collection = db['teachers']
+# In-memory storage (for development without MongoDB)
+activities_data = {}
+teachers_data = {}
+
+# Simple in-memory collection classes
+class InMemoryCollection:
+    def __init__(self, data_store):
+        self.data = data_store
+    
+    def count_documents(self, filter_dict):
+        return len(self.data)
+    
+    def insert_one(self, document):
+        doc_id = document.get("_id")
+        if doc_id:
+            self.data[doc_id] = {k: v for k, v in document.items() if k != "_id"}
+        return None
+    
+    def find_one(self, filter_dict):
+        if "_id" in filter_dict:
+            doc_id = filter_dict["_id"]
+            if doc_id in self.data:
+                return {"_id": doc_id, **self.data[doc_id]}
+        return None
+    
+    def find(self, filter_dict=None):
+        if filter_dict is None or not filter_dict:
+            return [{"_id": k, **v} for k, v in self.data.items()]
+        
+        results = []
+        for doc_id, doc_data in self.data.items():
+            match = True
+            
+            # Handle day filtering with $in operator
+            if "schedule_details.days" in filter_dict:
+                day_filter = filter_dict["schedule_details.days"]
+                if isinstance(day_filter, dict) and "$in" in day_filter:
+                    target_days = day_filter["$in"]
+                    doc_days = doc_data.get("schedule_details", {}).get("days", [])
+                    if not any(day in doc_days for day in target_days):
+                        match = False
+            
+            # Handle time filtering with $gte and $lte operators
+            if "schedule_details.start_time" in filter_dict:
+                time_filter = filter_dict["schedule_details.start_time"]
+                if isinstance(time_filter, dict) and "$gte" in time_filter:
+                    target_time = time_filter["$gte"]
+                    doc_time = doc_data.get("schedule_details", {}).get("start_time", "")
+                    if doc_time < target_time:
+                        match = False
+            
+            if "schedule_details.end_time" in filter_dict:
+                time_filter = filter_dict["schedule_details.end_time"]
+                if isinstance(time_filter, dict) and "$lte" in time_filter:
+                    target_time = time_filter["$lte"]
+                    doc_time = doc_data.get("schedule_details", {}).get("end_time", "")
+                    if doc_time > target_time:
+                        match = False
+            
+            if match:
+                results.append({"_id": doc_id, **doc_data})
+        
+        return results
+    
+    def update_one(self, filter_dict, update_dict):
+        if "_id" in filter_dict:
+            doc_id = filter_dict["_id"]
+            if doc_id in self.data:
+                if "$push" in update_dict:
+                    for field, value in update_dict["$push"].items():
+                        if field not in self.data[doc_id]:
+                            self.data[doc_id][field] = []
+                        self.data[doc_id][field].append(value)
+                if "$pull" in update_dict:
+                    for field, value in update_dict["$pull"].items():
+                        if field in self.data[doc_id] and isinstance(self.data[doc_id][field], list):
+                            if value in self.data[doc_id][field]:
+                                self.data[doc_id][field].remove(value)
+        return None
+
+# Create in-memory collections
+activities_collection = InMemoryCollection(activities_data)
+teachers_collection = InMemoryCollection(teachers_data)
 
 # Methods
 def hash_password(password):
@@ -163,6 +240,17 @@ initial_activities = {
         },
         "max_participants": 16,
         "participants": ["william@mergington.edu", "jacob@mergington.edu"]
+    },
+    "Manga Maniacs": {
+        "description": "Explore the fantastic stories of the most interesting characters from Japanese Manga (graphic novels).",
+        "schedule": "Tuesdays, 7:00 PM - 8:00 PM",
+        "schedule_details": {
+            "days": ["Tuesday"],
+            "start_time": "19:00",
+            "end_time": "20:00"
+        },
+        "max_participants": 15,
+        "participants": []
     }
 }
 
